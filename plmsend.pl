@@ -50,7 +50,6 @@ sub loop {
 sub loop_one {
     my $self = shift;
 
-
     if ($im_aldb_listener) {
         DEBUG && print STDERR "Continuing because of im_aldb_listener\n";
     } elsif (@command_queue) {
@@ -79,9 +78,13 @@ sub loop_one {
     print STDERR "Read $inlen bytes: " . unpack("H*", $input) . "\n"
         if DEBUG;
 
+    # The accumulator is a buffer that keeps the incoming stream left aligned for
+    # parsing. If there is a failure in parsing we're going to cycle the serial
+    # port to attempt to realign.
     $accumulator .= $input;
 
     while (length($accumulator) >= 1) {
+        # If we get a NAK that means the IM wasn't ready for the next one. Replay.
         if (substr($accumulator, 0, 1) eq "\x15") {
             substr($accumulator, 0, 1, '');
             my $command_entry = shift @command_queue;
@@ -91,11 +94,15 @@ sub loop_one {
             push @command_queue, $command_entry;
             return 1;
         }
+        # STX Is the valid mark of any input record
         unless (substr($accumulator, 0, 1) eq "\x02") {
             print STDERR "Unsyncronized Read: " . unpack("H*", $accumulator) . "\n";
             die;
         }
+
         my $len = length($accumulator);
+
+        # Command byte
         return 1 unless $len >= 2;
         my $cmd = substr($accumulator, 1, 1);
         my %cmd_inp_len = (
@@ -428,14 +435,14 @@ sub decode_standard {
     }
 
     my $extra = '';
-    $extra .= " Direct message"     if (($flag & 0xE0) == 0);
-    $extra .= " ACK Direct message" if (($flag & 0xE0) == 0x20);
-    $extra .= " NAK Direct message" if (($flag & 0xE0) == 0xA0);
-    $extra .= " Broadcast message"  if (($flag & 0xE0) == 0x80);
+    $extra .= " Direct message"             if (($flag & 0xE0) == 0);
+    $extra .= " ACK Direct message"         if (($flag & 0xE0) == 0x20);
+    $extra .= " NAK Direct message"         if (($flag & 0xE0) == 0xA0);
+    $extra .= " Broadcast message"          if (($flag & 0xE0) == 0x80);
     $extra .= " ALL-Link Broadcast Message" if (($flag & 0xE0) == 0xC0);
     $extra .= " ALL-Link Broadcast Message" if (($flag & 0xE0) == 0x40);
-    $extra .= " ACK ALL-Link Message" if (($flag & 0xE0) == 0x60);
-    $extra .= " NAK ALL-Link Message" if (($flag & 0xE0) == 0xE0);
+    $extra .= " ACK ALL-Link Message"       if (($flag & 0xE0) == 0x60);
+    $extra .= " NAK ALL-Link Message"       if (($flag & 0xE0) == 0xE0);
 
     DEBUG && print "[$from -> $to] $command$extra\n";
     return 1;
@@ -458,14 +465,14 @@ sub decode_extended {
     my ($hexdata) = unpack('H[28]', $data);
 
     my $extra = '';
-    $extra .= " Direct message" if (($flag & 0xE0) == 0);
-    $extra .= " ACK Direct message" if (($flag & 0xE0) == 0x20);
-    $extra .= " NAK Direct message" if (($flag & 0xE0) == 0xA0);
-    $extra .= " Broadcast message"  if (($flag & 0xE0) == 0x80);
+    $extra .= " Direct message"             if (($flag & 0xE0) == 0);
+    $extra .= " ACK Direct message"         if (($flag & 0xE0) == 0x20);
+    $extra .= " NAK Direct message"         if (($flag & 0xE0) == 0xA0);
+    $extra .= " Broadcast message"          if (($flag & 0xE0) == 0x80);
     $extra .= " ALL-Link Broadcast Message" if (($flag & 0xE0) == 0xC0);
     $extra .= " ALL-Link Broadcast Message" if (($flag & 0xE0) == 0x40);
-    $extra .= " ACK ALL-Link Message" if (($flag & 0xE0) == 0x60);
-    $extra .= " NAK ALL-Link Message" if (($flag & 0xE0) == 0xE0);
+    $extra .= " ACK ALL-Link Message"       if (($flag & 0xE0) == 0x60);
+    $extra .= " NAK ALL-Link Message"       if (($flag & 0xE0) == 0xE0);
 
     DEBUG && print "[$from -> $to] $command $hexdata$extra\n";
 
