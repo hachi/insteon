@@ -106,6 +106,7 @@ sub loop_one {
         return 1 unless $len >= 2;
         my $cmd = substr($accumulator, 1, 1);
         my %cmd_inp_len = (
+            ## Informational frames
             "\x50" => 11,       # Receive Standard
             "\x51" => 25,       # Receive Extended
             "\x52" => 4,        # Receive X10
@@ -142,6 +143,11 @@ sub loop_one {
 
         # Incoming ACK/NAK for commands issued.
         my %cmd_ack_len = (
+            ## Issued command ACK/NAK replies
+            # Typically these are replied to with a single ACK/NAK frame
+            # to indicate action success.
+            # (X)       responses will arrive via information frames so
+            #           we will need to maintain some state for tracking
           # "\x60" => 9,        # Get IM Info (Special)
             "\x61" => 6,        # Send All-Link Command (X)
           # "\x62" => 9 or 23   # Send Standard/Extended (Special)
