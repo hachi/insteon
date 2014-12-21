@@ -3,16 +3,15 @@
 use strict;
 use warnings;
 
-package PLM;
+package Insteon::PLM::Serial;
 
 use IO::Termios;
+use Scalar::Util qw(weaken);
+use Errno qw(EAGAIN);
 
 sub DEBUG () { 0 }
 
-sub ACK () { 0x06 }
-sub NAK () { 0x15 }
-
-my @command_queue;
+my @PLMrefs;
 
 sub open {
     my $package = shift;
@@ -22,29 +21,164 @@ sub open {
 
     $term->blocking(0);
 
-    return bless {
+    my $plm = bless {
         dev => $term,
+        write_buf => [],
+        on_read => undef,
     }, (ref($package) || $package);
+
+    # We have to weaken a blessed ref, but can't take a copy of it.
+    # So take a ref and then deref it to weaken. Ew.
+    my $plm_copy = $plm;
+    my $plmref = \$plm;
+    weaken($$plmref);
+    push @PLMrefs, $plmref;
+
+    return $plm_copy;
+}
+
+sub poll {
+    my $self = shift; # Might be called as a package method though too.
+
+    my ($rin, $win) = ('', '');
+    my %FilenoToPLM;
+
+    {
+        my @PLMs = ref $self ? ($self) : (grep { $$_ } @PLMrefs);
+
+        foreach my $plm (@PLMs) {
+            my $term = $plm->{dev};
+            my $fileno = fileno($term);
+            if ($plm->{on_read}) {
+                DEBUG && print STDERR "Watching for readability on $plm\n";
+                vec($rin, $fileno,  1) = 1;
+            }
+            if (@{$plm->{write_buf}}) {
+                DEBUG && print STDERR "Watching for writability on $plm\n";
+                vec($win, $fileno,  1) = 1
+            }
+            $FilenoToPLM{$fileno} = $plm;
+        }
+    }
+
+    my $timeout = 5;
+
+    my ($nfound, $timeleft) =
+        select(my $rout=$rin, my $wout=$win, undef, $timeout);
+
+    unless($nfound) {
+        warn "No ready sockets found\n";
+        return;
+    }
+
+    foreach my $fileno (keys %FilenoToPLM) {
+        my $plm = $FilenoToPLM{$fileno};
+        if (vec($rout, $fileno,  1)) {
+            DEBUG && print STDERR "Got readability on $plm\n";
+            $plm->readable();
+        }
+        if (vec($wout, $fileno,  1)) {
+            DEBUG && print STDERR "Got writability on $plm\n";
+            $plm->writable();
+        }
+    }
+}
+
+sub readable {
+    my $self = shift;
+    my $term = $self->{dev};
+
+    DEBUG && print STDERR "Reading from $self\n";
+    my $inlen = $term->sysread(my $input, 1024);
+    unless (defined $inlen) {
+        return 0 if $! == EAGAIN;
+        DEBUG && print STDERR "Failed (undef) read from $self: $!\n";
+        return 1;
+    }
+    unless ($inlen > 0) {
+        DEBUG && print STDERR "Failed (negative) read from $self: $!\n";
+        return 1;
+    }
+    print STDERR "Read $inlen bytes: " . unpack("H*", $input) . "\n"
+        if DEBUG;
+    $self->{on_read}->($self, $input, $inlen);
+}
+
+sub writable {
+    my $self = shift;
+    my $term = $self->{dev};
+
+    my $write_buf = $self->{write_buf};
+
+    while (@$write_buf) {
+        DEBUG && print STDERR "Running one write pass\n";
+
+        my $cur = $write_buf->[0];
+        if (ref($cur) eq 'CODE') {
+            shift @$write_buf;
+            print STDERR "Calling write callback: $cur\n";
+            $cur->($self);
+            next;
+        }
+
+        my $len = length($cur);
+        my $rv = $self->{dev}->syswrite($cur);
+
+        unless (defined($rv) && $rv > 0) {
+            return if $! == EAGAIN;
+            die "Failed to write: $!"
+        }
+        return if $rv == 0;
+
+        if ($rv == $len) {
+            my $sent = shift @$write_buf;
+            print STDERR "Flushed full buffer $rv bytes: " . unpack("H*", $sent) . "\n"
+                if DEBUG;
+            next;
+        }
+
+        my $sent = substr($write_buf->[0], 0, $rv, '');
+        print STDERR "Flushed $rv bytes: " . unpack("H*", $sent) . "\n"
+            if DEBUG;
+        return;
+    }
 }
 
 sub send {
     my $self = shift;
-    return $self->{dev}->syswrite(shift);
+    push @{$self->{write_buf}}, @_;
 }
+
+package Insteon::PLM;
+
+sub DEBUG () { 0 }
+
+sub ACK () { 0x06 }
+sub NAK () { 0x15 }
 
 my $accumulator = "";
 
+sub on_read {
+    my ($plm, $input, $inlen) = @_;
+    # The accumulator is a buffer that keeps the incoming stream left aligned for
+    # parsing. If there is a failure in parsing we're going to cycle the serial
+    # port to attempt to realign.
+    $accumulator .= $input;
+}
+
+my $plm = Insteon::PLM::Serial->open('/dev/ttyUSB0');
+$plm->{on_read} = \&on_read;
+
 my $im_aldb_listener;
 my %get_aldb_device_listener;
+my @command_queue;
 
 sub loop {
     my $self = shift;
 
     {
-        redo if $self->loop_one(@_);
+        redo if $self->loop_one();
     }
-
-    return;
 }
 
 sub loop_one {
@@ -60,28 +194,7 @@ sub loop_one {
         return 0;
     }
 
-    my $term = $self->{dev};
-
-    my $timeout = 5;
-
-    my ($rin, $win, $ein) = ('', '', '');
-    vec($rin, fileno($term),  1) = 1;
-    #vec($win, fileno(STDOUT), 1) = 1;
-    $ein = $rin | $win;
-
-    my ($nfound, $timeleft) =
-        select(my $rout=$rin, my $wout=$win, my $eout=$ein, $timeout);
-
-    my $inlen = $term->sysread(my $input, 1024);
-    return 1 unless defined $inlen;
-    return 1 unless $inlen > 0;
-    print STDERR "Read $inlen bytes: " . unpack("H*", $input) . "\n"
-        if DEBUG;
-
-    # The accumulator is a buffer that keeps the incoming stream left aligned for
-    # parsing. If there is a failure in parsing we're going to cycle the serial
-    # port to attempt to realign.
-    $accumulator .= $input;
+    $plm->poll();
 
     while (length($accumulator) >= 1) {
         # If we get a NAK that means the IM wasn't ready for the next one. Replay.
@@ -90,7 +203,7 @@ sub loop_one {
             my $command_entry = shift @command_queue;
             my $estatement = $command_entry->[0];
             print STDERR "Sending command again: " . unpack("H*", $estatement) . "\n";
-            $self->send($estatement);
+            $plm->send($estatement);
             push @command_queue, $command_entry;
             return 1;
         }
@@ -284,9 +397,7 @@ sub plm_command {
 
     print STDERR "Sending: " . unpack("H*", $output) . "\n"
         if DEBUG;
-    $self->send($output);
-
-    my $term = $self->{dev};
+    $plm->send($output);
 
     push @command_queue, [ $output, $callback ];
 }
@@ -547,7 +658,6 @@ sub decode_aldb {
 
 package main;
 
-my $plm = PLM->open('/dev/ttyUSB0');
 
 # Beep everything?
 #$plm->send_all_link_command(9, '30');
@@ -581,6 +691,6 @@ my $cb = sub {
     print @_;
 };
 
-#$plm->get_im_aldb($cb);
-$plm->read_aldb($cb, shift);
-$plm->loop();
+#Insteon::PLM->get_im_aldb($cb);
+Insteon::PLM->read_aldb($cb, shift);
+Insteon::PLM->loop();
