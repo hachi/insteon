@@ -5,27 +5,38 @@ use warnings;
 
 use lib 'lib';
 
-use Insteon::PLM::Serial;
-
 package Insteon::PLM;
+
+use Insteon::PLM::Serial;
+use Insteon::Util qw(want_name want_id get_name);
 
 sub DEBUG () { 0 }
 
 sub ACK () { 0x06 }
 sub NAK () { 0x15 }
 
-my $accumulator = "";
+sub new {
+    my $class = shift;
+    my $port = shift;
 
-sub on_read {
-    my ($plm, $input, $inlen) = @_;
-    # The accumulator is a buffer that keeps the incoming stream left aligned for
-    # parsing. If there is a failure in parsing we're going to cycle the serial
-    # port to attempt to realign.
-    $accumulator .= $input;
+    my $accumulator = "";
+
+    my $on_read = sub {
+        my ($modem, $input, $inlen) = @_;
+        # The accumulator is a buffer that keeps the incoming stream left aligned for
+        # parsing. If there is a failure in parsing we're going to cycle the serial
+        # port to attempt to realign.
+        $accumulator .= $input;
+    };
+
+    my $modem = Insteon::PLM::Serial->open($port);
+    $modem->{on_read} = $on_read; # TODO accessor
+
+    return bless {
+        accumulator => \$accumulator,
+        modem => $modem,
+    }, (ref $class || $class);
 }
-
-my $plm = Insteon::PLM::Serial->open('/dev/ttyUSB0');
-$plm->{on_read} = \&on_read;
 
 my $im_aldb_listener;
 my %get_aldb_device_listener;
@@ -42,6 +53,8 @@ sub loop {
 sub loop_one {
     my $self = shift;
 
+    my $accumulator = $self->{accumulator};
+
     if ($im_aldb_listener) {
         DEBUG && print STDERR "Continuing because of im_aldb_listener\n";
     } elsif (@command_queue) {
@@ -52,30 +65,30 @@ sub loop_one {
         return 0;
     }
 
-    $plm->poll();
+    Insteon::PLM::Serial->poll();
 
-    while (length($accumulator) >= 1) {
+    while (length($$accumulator) >= 1) {
         # If we get a NAK that means the IM wasn't ready for the next one. Replay.
-        if (substr($accumulator, 0, 1) eq "\x15") {
-            substr($accumulator, 0, 1, '');
+        if (substr($$accumulator, 0, 1) eq "\x15") {
+            substr($$accumulator, 0, 1, '');
             my $command_entry = shift @command_queue;
             my $estatement = $command_entry->[0];
             print STDERR "Sending command again: " . unpack("H*", $estatement) . "\n";
-            $plm->send($estatement);
+            $self->{modem}->send($estatement);
             push @command_queue, $command_entry;
-            return 1;
+            next;
         }
         # STX Is the valid mark of any input record
-        unless (substr($accumulator, 0, 1) eq "\x02") {
-            print STDERR "Unsyncronized Read: " . unpack("H*", $accumulator) . "\n";
+        unless (substr($$accumulator, 0, 1) eq "\x02") {
+            print STDERR "Unsyncronized Read: " . unpack("H*", $$accumulator) . "\n";
             die;
         }
 
-        my $len = length($accumulator);
+        my $len = length($$accumulator);
 
         # Command byte
         return 1 unless $len >= 2;
-        my $cmd = substr($accumulator, 1, 1);
+        my $cmd = substr($$accumulator, 1, 1);
         my %cmd_inp_len = (
             ## Informational frames
             "\x50" => 11,       # Receive Standard
@@ -92,7 +105,7 @@ sub loop_one {
         if (my $elen = $cmd_inp_len{$cmd}) {
             return 1 unless $len >= $elen;
 
-            my $data = substr($accumulator, 2, $elen - 2);
+            my $data = substr($$accumulator, 2, $elen - 2);
             if ($cmd eq "\x50") {
                 $self->decode_standard($data);
             } elsif ($cmd eq "\x51") {
@@ -108,7 +121,7 @@ sub loop_one {
                 print STDERR "Data:    " . unpack("H*", $data) . "\n";
                 die "Not sure what to do here.\n";
             }
-            substr($accumulator, 0, $elen, '');
+            substr($$accumulator, 0, $elen, '');
             next;
         }
 
@@ -148,7 +161,7 @@ sub loop_one {
             my $estatement = $command_entry->[0];
             my $callback = $command_entry->[1];
 
-            my $statement = substr($accumulator, 0, $elen - 1);
+            my $statement = substr($$accumulator, 0, $elen - 1);
 
             print STDERR "Expecting : " . unpack("H*", $estatement) . "\n"
                 if DEBUG;
@@ -156,7 +169,7 @@ sub loop_one {
                 if DEBUG;
             die("Mismatched statement") unless $estatement eq $statement;
 
-            my $input = substr($accumulator, $elen - 1, 1);
+            my $input = substr($$accumulator, $elen - 1, 1);
             if ($input eq "\x06") {
                 $callback->(ACK);
             } elsif ($input eq "\x15") {
@@ -165,15 +178,15 @@ sub loop_one {
                 die "Unknown result";
             }
 
-            substr($accumulator, 0, $elen, '');
+            substr($$accumulator, 0, $elen, '');
             next;
         }
-        if ($cmd eq "\x60") {
+        if ($cmd eq "\x60") { # Get IM Information
             die;
         } elsif ($cmd eq "\x62") { # Send Insteon Standard/Extended
             return 1 unless $len >= 9;
 
-            my $flags = substr($accumulator, 5, 1);
+            my $flags = substr($$accumulator, 5, 1);
             print STDERR "Flags are : " . unpack("H*", $flags) . "\n"
                 if DEBUG;
             my $elen = (ord($flags) & 16) ? 23 : 9;
@@ -184,7 +197,7 @@ sub loop_one {
             my $estatement = $command_entry->[0];
             my $callback = $command_entry->[1];
 
-            my $statement = substr($accumulator, 0, $elen - 1);
+            my $statement = substr($$accumulator, 0, $elen - 1);
 
             print STDERR "Expecting : " . unpack("H*", $estatement) . "\n"
                 if DEBUG;
@@ -192,7 +205,7 @@ sub loop_one {
                 if DEBUG;
             die("Mismatched statement: ") unless $estatement eq $statement;
 
-            my $input = substr($accumulator, $elen - 1, 1);
+            my $input = substr($$accumulator, $elen - 1, 1);
             if ($input eq "\x06") {
                 $callback->(ACK);
             } elsif ($input eq "\x15") {
@@ -201,9 +214,9 @@ sub loop_one {
                 die "Unknown result";
             }
 
-            substr($accumulator, 0, $elen, '');
+            substr($$accumulator, 0, $elen, '');
             next;
-        } elsif ($cmd eq "\x73") {
+        } elsif ($cmd eq "\x73") { # Get IM Configuration
             die;
         }
         die "Completely unknown/unexpected command";
@@ -223,31 +236,6 @@ my $flags = sub {
     return 0 + ($opts{extended} ? 16 : 0) + ($opts{max_hops} & 3);
 };
 
-my %device_by_name;
-my %device_by_id;
-
-{
-    CORE::open(my $fh, '<', '/etc/insteon.conf');
-
-    while (my $line = <$fh>) {
-        chomp $line;
-        if (my ($name, $id) = map { lc($_) } ($line =~ m/^(\w+)\s+([0-9A-F]{6})\b/i)) {
-            $device_by_name{$name} = $id;
-            $device_by_id{$id} = $name;
-        }
-    }
-}
-
-sub want_name {
-    my $input = lc(shift);
-    return $device_by_id{$input} || $input;
-}
-
-sub want_id {
-    my $input = lc(shift);
-    return $device_by_name{$input} || $input;
-}
-
 sub plm_command {
     my $self = shift;
     my $output = shift;
@@ -255,7 +243,8 @@ sub plm_command {
 
     print STDERR "Sending: " . unpack("H*", $output) . "\n"
         if DEBUG;
-    $plm->send($output);
+    my $modem = $self->{modem};
+    $modem->send($output);
 
     push @command_queue, [ $output, $callback ];
 }
@@ -404,7 +393,7 @@ sub decode_standard {
     my ($from, $to, $flag, $command) = unpack('H[6]H[6]CH[4]', $input);
 
     foreach my $addr ($from, $to) {
-        if (my $name = $device_by_id{$addr}) {
+        if (my $name = get_name($addr)) {
             $addr .= "($name)";
         }
     }
@@ -432,7 +421,7 @@ sub decode_extended {
     my $raw_from = $from;
 
     foreach my $addr ($from, $to) {
-        if (my $name = $device_by_id{$addr}) {
+        if (my $name = get_name($addr)) {
             $addr .= "($name)";
         }
     }
@@ -507,7 +496,7 @@ sub decode_aldb {
         push @output, "Next";
     }
 
-    if (my $name = $device_by_id{$address}) {
+    if (my $name = get_name($address)) {
         $address .= "($name)";
     }
 
@@ -516,6 +505,7 @@ sub decode_aldb {
 
 package main;
 
+my $plm = Insteon::PLM->new('/dev/ttyUSB0');
 
 # Beep everything?
 #$plm->send_all_link_command(9, '30');
@@ -549,6 +539,7 @@ my $cb = sub {
     print @_;
 };
 
-#Insteon::PLM->get_im_aldb($cb);
-Insteon::PLM->read_aldb($cb, shift);
-Insteon::PLM->loop();
+#$plm->get_im_aldb($cb);
+
+$plm->read_aldb($cb, shift);
+$plm->loop();
