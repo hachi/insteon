@@ -5,6 +5,8 @@ use warnings;
 
 use lib 'lib';
 
+use Insteon::PLM;
+
 my $plm = Insteon::PLM->new('/dev/ttyUSB0');
 
 # Beep everything?
