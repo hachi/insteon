@@ -381,18 +381,16 @@ sub read_aldb {
     });
 }
 
-sub decode_standard {
-    my $self = shift;
-
-    my $input = shift;
-
-    my ($from, $to, $flag, $command) = unpack('H[6]H[6]CH[4]', $input);
+sub debug_message {
+    my ($from, $to, $flag, $command, $data) = @_;
 
     foreach my $addr ($from, $to) {
         if (my $name = get_name($addr)) {
             $addr .= "($name)";
         }
     }
+
+    my ($hexdata) = defined($data) ? unpack('H[28]', $data) : '';
 
     my $extra = '';
     $extra .= " Direct message"             if (($flag & 0xE0) == 0);
@@ -404,7 +402,18 @@ sub decode_standard {
     $extra .= " ACK ALL-Link Message"       if (($flag & 0xE0) == 0x60);
     $extra .= " NAK ALL-Link Message"       if (($flag & 0xE0) == 0xE0);
 
-    DEBUG && print "[$from -> $to] $command$extra\n";
+    print "[$from -> $to] $command $hexdata$extra\n";
+    return;
+}
+
+sub decode_standard {
+    my $self = shift;
+
+    my $input = shift;
+
+    my ($from, $to, $flag, $command) = unpack('H[6]H[6]CH[4]', $input);
+
+    DEBUG && debug_message($from, $to, $flag, $command);
     return 1;
 }
 
@@ -414,27 +423,8 @@ sub decode_extended {
     my $input = shift;
 
     my ($from, $to, $flag, $command, $data) = unpack('H[6]H[6]CH[4]a[14]', $input);
-    my $raw_from = $from;
 
-    foreach my $addr ($from, $to) {
-        if (my $name = get_name($addr)) {
-            $addr .= "($name)";
-        }
-    }
-
-    my ($hexdata) = unpack('H[28]', $data);
-
-    my $extra = '';
-    $extra .= " Direct message"             if (($flag & 0xE0) == 0);
-    $extra .= " ACK Direct message"         if (($flag & 0xE0) == 0x20);
-    $extra .= " NAK Direct message"         if (($flag & 0xE0) == 0xA0);
-    $extra .= " Broadcast message"          if (($flag & 0xE0) == 0x80);
-    $extra .= " ALL-Link Broadcast Message" if (($flag & 0xE0) == 0xC0);
-    $extra .= " ALL-Link Broadcast Message" if (($flag & 0xE0) == 0x40);
-    $extra .= " ACK ALL-Link Message"       if (($flag & 0xE0) == 0x60);
-    $extra .= " NAK ALL-Link Message"       if (($flag & 0xE0) == 0xE0);
-
-    DEBUG && print "[$from -> $to] $command $hexdata$extra\n";
+    DEBUG && debug_message($from, $to, $flag, $command, $data);
 
     if ($command eq '0300') {
         # Product Data Response
@@ -452,7 +442,7 @@ sub decode_extended {
         my ($rrw, $address, $l, $record) = unpack('xCH[4]Ca[8]x', $data);
         if ($rrw == 1) {
             my $record = "ALDB($address) " . decode_aldb($record) . "\n";
-            if (my $listener = $get_aldb_device_listener{$raw_from}) {
+            if (my $listener = $get_aldb_device_listener{$from}) {
                 $listener->($record);
             } else {
                 print $record;
