@@ -32,43 +32,46 @@ sub new {
     return bless {
         accumulator => \$accumulator,
         modem => $modem,
+        command_queue => [],
+        loop_ref_count => 0,
     }, (ref $class || $class);
 }
 
 {
-    my $loop_ref_count = 0;
-
     sub Insteon::PLM::_LOOP_TOKEN::DESTROY {
-        DEBUG && print STDERR "LOOP TOKEN --\n";
-        $loop_ref_count--;
+        my $self = shift;
+        my $plm = $$self;
+        $plm->{loop_ref_count}--;
+        DEBUG && print STDERR "LOOP TOKEN -- $plm->{loop_ref_count}\n";
     }
 
     sub _loop_token {
-        DEBUG && print STDERR "LOOP TOKEN ++\n";
-        $loop_ref_count++;
-        my $empty;
-        return bless \$empty, 'Insteon::PLM::_LOOP_TOKEN';
+        my $self = shift;
+        $self->{loop_ref_count}++;
+        DEBUG && print STDERR "LOOP TOKEN ++ $self->{loop_ref_count}\n";
+        return bless \$self, 'Insteon::PLM::_LOOP_TOKEN';
     }
 
     sub _loop_refs {
-        return $loop_ref_count;
+        my $self = shift;
+        DEBUG && print STDERR "LOOP REF COUNT $self->{loop_ref_count}\n";
+        return $self->{loop_ref_count};
     }
 }
 
 sub loop {
     my $self = shift;
 
-    while (_loop_refs()) {
+    while ($self->_loop_refs()) {
         next if $self->loop_one();
     }
 }
-
-my @command_queue;
 
 sub loop_one {
     my $self = shift;
 
     my $accumulator = $self->{accumulator};
+    my $command_queue = $self->{command_queue};
 
     Insteon::PLM::Serial->poll();
 
@@ -76,11 +79,11 @@ sub loop_one {
         # If we get a NAK that means the IM wasn't ready for the next one. Replay.
         if (substr($$accumulator, 0, 1) eq "\x15") {
             substr($$accumulator, 0, 1, '');
-            my $command_entry = shift @command_queue;
+            my $command_entry = shift @$command_queue;
             my $estatement = $command_entry->[0];
             print STDERR "Sending command again: " . unpack("H*", $estatement) . "\n";
             $self->{modem}->send($estatement);
-            push @command_queue, $command_entry;
+            push @$command_queue, $command_entry;
             next;
         }
         # STX Is the valid mark of any input record
@@ -162,7 +165,7 @@ sub loop_one {
         if (my $elen = $cmd_ack_len{$cmd}) {
             return 1 unless $len >= $elen;
 
-            my $command_entry = shift @command_queue;
+            my $command_entry = shift @$command_queue;
             my $estatement = $command_entry->[0];
             my $callback = $command_entry->[1];
 
@@ -198,7 +201,7 @@ sub loop_one {
 
             return 1 unless $len >= $elen;
 
-            my $command_entry = shift @command_queue;
+            my $command_entry = shift @$command_queue;
             my $estatement = $command_entry->[0];
             my $callback = $command_entry->[1];
 
@@ -251,7 +254,9 @@ sub plm_command {
     my $modem = $self->{modem};
     $modem->send($output);
 
-    push @command_queue, [ $output, $callback, _loop_token() ];
+    my $command_queue = $self->{command_queue};
+
+    push @$command_queue, [ $output, $callback, $self->_loop_token() ];
 }
 
 sub get_im_info {
@@ -335,7 +340,7 @@ sub get_im_aldb {
     my $callback = shift;
 
     die if $im_aldb_lock;
-    $im_aldb_lock = _loop_token();
+    $im_aldb_lock = $self->_loop_token();
     my @records;
 
     my $next;
