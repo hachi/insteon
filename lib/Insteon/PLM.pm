@@ -35,8 +35,6 @@ sub new {
     }, (ref $class || $class);
 }
 
-my @command_queue;
-
 {
     my $loop_ref_count = 0;
 
@@ -60,10 +58,12 @@ my @command_queue;
 sub loop {
     my $self = shift;
 
-    while (@command_queue || _loop_refs()) {
+    while (_loop_refs()) {
         next if $self->loop_one();
     }
 }
+
+my @command_queue;
 
 sub loop_one {
     my $self = shift;
@@ -251,7 +251,7 @@ sub plm_command {
     my $modem = $self->{modem};
     $modem->send($output);
 
-    push @command_queue, [ $output, $callback ];
+    push @command_queue, [ $output, $callback, _loop_token() ];
 }
 
 sub get_im_info {
