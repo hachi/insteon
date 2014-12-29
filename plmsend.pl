@@ -43,5 +43,5 @@ my $cb = sub {
 
 #$plm->get_im_aldb($cb);
 
-$plm->read_aldb($cb, shift);
+$plm->device(shift)->read_aldb($cb);
 $plm->loop();

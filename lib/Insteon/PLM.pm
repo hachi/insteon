@@ -3,6 +3,7 @@ package Insteon::PLM;
 use strict;
 use warnings;
 
+use Insteon::Device;
 use Insteon::PLM::Serial;
 use Insteon::Util qw(want_name want_id get_name);
 
@@ -34,15 +35,33 @@ sub new {
     }, (ref $class || $class);
 }
 
-my $im_aldb_listener;
-my %get_aldb_device_listener;
 my @command_queue;
+
+{
+    my $loop_ref_count = 0;
+
+    sub Insteon::PLM::_LOOP_TOKEN::DESTROY {
+        DEBUG && print STDERR "LOOP TOKEN --\n";
+        $loop_ref_count--;
+    }
+
+    sub _loop_token {
+        DEBUG && print STDERR "LOOP TOKEN ++\n";
+        $loop_ref_count++;
+        my $empty;
+        return bless \$empty, 'Insteon::PLM::_LOOP_TOKEN';
+    }
+
+    sub _loop_refs {
+        return $loop_ref_count;
+    }
+}
 
 sub loop {
     my $self = shift;
 
-    {
-        redo if $self->loop_one();
+    while (@command_queue || _loop_refs()) {
+        next if $self->loop_one();
     }
 }
 
@@ -50,16 +69,6 @@ sub loop_one {
     my $self = shift;
 
     my $accumulator = $self->{accumulator};
-
-    if ($im_aldb_listener) {
-        DEBUG && print STDERR "Continuing because of im_aldb_listener\n";
-    } elsif (@command_queue) {
-        DEBUG && print STDERR "Continuing because of command_queue\n";
-    } elsif (keys %get_aldb_device_listener) {
-        DEBUG && print STDERR "Continuing because of get_aldb_device_listener\n";
-    } else {
-        return 0;
-    }
 
     Insteon::PLM::Serial->poll();
 
@@ -318,6 +327,7 @@ sub _next_all_link_record {
     $self->plm_command($output, @_);
 }
 
+my $im_aldb_listener;
 my $im_aldb_lock = 0;
 
 sub get_im_aldb {
@@ -325,7 +335,7 @@ sub get_im_aldb {
     my $callback = shift;
 
     die if $im_aldb_lock;
-    $im_aldb_lock = 1;
+    $im_aldb_lock = _loop_token();
     my @records;
 
     my $next;
@@ -352,33 +362,11 @@ sub get_im_aldb {
     $self->_first_all_link_record($next);
 }
 
-my %aldb_lock_device = ();
-
-sub read_aldb {
+sub device {
     my $self = shift;
-    my $callback = shift;
-    my $device = shift;
-    my $device_id = want_id($device);
+    my $address = want_id(shift);
 
-    die if $aldb_lock_device{$device_id};
-    $aldb_lock_device{$device_id} = 1;
-
-    my @records;
-
-    my $listener = sub {
-        push @records, @_;
-        unless ($records[-1] =~ m/\bNext\b/) {
-            $aldb_lock_device{$device_id} = 0;
-            delete $get_aldb_device_listener{$device_id};
-            $callback->(@records);
-            return;
-        }
-        # Advance timeout if we have one
-    };
-
-    $self->send_insteon_extended($device, qw(2f00 0000000000000000000000000000), sub {
-        $get_aldb_device_listener{$device_id} = $listener;
-    });
+    return Insteon::Device->get($self, $address);
 }
 
 sub debug_message {
@@ -442,11 +430,7 @@ sub decode_extended {
         my ($rrw, $address, $l, $record) = unpack('xCH[4]Ca[8]x', $data);
         if ($rrw == 1) {
             my $record = "ALDB($address) " . decode_aldb($record) . "\n";
-            if (my $listener = $get_aldb_device_listener{$from}) {
-                $listener->($record);
-            } else {
-                print $record;
-            }
+            $self->device($from)->_receive_aldb($record);
         }
     }
 
