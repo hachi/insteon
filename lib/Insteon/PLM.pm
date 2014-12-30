@@ -238,10 +238,16 @@ my $flags = sub {
         extended => 0,
         max_hops => 3,
         rem_hops => 3,
+        broadcast => 0,
+        group => 0,
     );
 
     my %opts = (%defaults, @_);
-    return 0 + ($opts{extended} ? 16 : 0) + ($opts{max_hops} & 3);
+    return 0 +
+        ($opts{broadcast} ? 128 : 0) +
+        ($opts{group} ? 64 : 0) +
+        ($opts{extended} ? 16 : 0) +
+        ($opts{max_hops} & 3);
 };
 
 sub plm_command {
@@ -289,6 +295,15 @@ sub send_insteon_extended {
     my ($device, $command, $data, $callback) = @_;
     my $output = "\x02\x62";
     $output .= pack("H[6]CH[4]H[28]", want_id($device), $flags->(extended => 1), $command, $data);
+
+    $self->plm_command($output, $callback);
+}
+
+sub send_insteon_group {
+    my $self = shift;
+    my ($group, $command, $callback) = @_;
+    my $output = "\x02\x62";
+    $output .= pack("H[4]CCH[4]", "0000", $group, $flags->(group => 1, broadcast => 1), $command);
 
     $self->plm_command($output, $callback);
 }

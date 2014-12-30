@@ -10,7 +10,7 @@ use Insteon::PLM;
 my $plm = Insteon::PLM->new('/dev/ttyUSB0');
 
 # Beep everything?
-#$plm->send_all_link_command(9, '30');
+$plm->send_insteon_group(9, '30');
 
 # Write ALDB D2 0x02, D3-D4 address, D5 number of bytes (0x01-0x08), D6-D13 data to write.
 # ALDB(0fbf) Group: 01 Address: nnnnnn(outside_drive) Control: 226 [In Use,Master,Next] 05 1c 01
@@ -43,5 +43,5 @@ my $cb = sub {
 
 #$plm->get_im_aldb($cb);
 
-$plm->device(shift)->read_aldb($cb);
+#$plm->device(shift)->read_aldb($cb);
 $plm->loop();
