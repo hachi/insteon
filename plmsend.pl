@@ -17,17 +17,17 @@ my $plm = Insteon::PLM->new('/dev/ttyUSB0');
 #$plm->send_insteon_extended(qw(garage 2f00 00020FBF08000000000000000000));
 
 # Request Product Data
-#$plm->send_insteon_standard(qw(outside_garage 0300));
-#$plm->send_insteon_standard(qw(front_light 0300));
+#$plm->device('outside_garage')->get_product_data();
+#$plm->device('front_light')->get_product_data();
 
 # Request Device String
-#$plm->send_insteon_standard(qw(garage 0302));
+#$plm->device('garage')->get_device_string();
 
 # Beep
-#$plm->send_insteon_standard(qw(outside_garage 3001));
+#$plm->device('outside_garage')->beep();
 
 # Ping
-#$plm->send_insteon_standard(qw(outside_garage 0F00));
+#$plm->device('outside_garage')->ping();
 
 # Extended settings get
 #$plm->send_insteon_extended(qw(outside_garage 2E00 0000000000000000000000000000));
