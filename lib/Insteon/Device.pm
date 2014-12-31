@@ -18,6 +18,7 @@ sub get {
     my $self = bless {
         address => $address,
         plm     => $plm,
+        locks   => {},
     }, (ref $class || $class);
 
     $devices{$address} = $self;
@@ -78,12 +79,14 @@ sub get_engine {
     my $self = shift;
 
     $self->_standard(qw(0D00), sub {
+        $self->{locks}->{get_engine} = $self->{plm}->_loop_token();
     });
 }
 
 sub ping {
     my $self = shift;
     $self->_standard(qw(0F00), sub {
+        $self->{locks}->{ping} = $self->{plm}->_loop_token();
     });
 }
 
@@ -241,6 +244,7 @@ sub _receive_standard {
 
     if ($command =~ m/^0d/i) {
         print "Insteon engine version: $command\n";
+        delete $self->{locks}->{get_engine};
     }
 
     return 1;
