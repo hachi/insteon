@@ -20,7 +20,7 @@ sub get {
         plm     => $plm,
     }, (ref $class || $class);
 
-    weaken($devices{$address} = $self);
+    $devices{$address} = $self;
 
     return $self;
 }
