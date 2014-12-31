@@ -5,7 +5,7 @@ use warnings;
 
 use Insteon::Device;
 use Insteon::PLM::Serial;
-use Insteon::Util qw(want_name want_id get_name);
+use Insteon::Util qw(want_name want_id get_name decode_aldb);
 
 sub DEBUG () { 0 }
 
@@ -422,7 +422,8 @@ sub decode_standard {
     my ($from, $to, $flag, $command) = unpack('H[6]H[6]CH[4]', $input);
 
     DEBUG && debug_message($from, $to, $flag, $command);
-    return 1;
+
+    return $self->device($from)->_receive_standard($from, $to, $flag, $command);
 }
 
 sub decode_extended {
@@ -434,27 +435,7 @@ sub decode_extended {
 
     DEBUG && debug_message($from, $to, $flag, $command, $data);
 
-    if ($command eq '0300') {
-        # Product Data Response
-        # D1: 0x00, D2-D4: Product Key, D5: DevCat, D6: SubCat, D7: Firmware, D8-D14: unspec
-        my ($prod_key, $dev_cat, $sub_cat, $firmware) = unpack('xH[6]H[2]H[2]H[2]', $data);
-        print "Product Data PK: $prod_key Category: $dev_cat/$sub_cat Firmware: $firmware\n";
-    }
-
-    if ($command eq '2e00') {
-        my ($bg, $verb, $x10h, $x10u) = unpack('H[2]H[2]xxH[2]H[2]', $data);
-    }
-
-    if ($command eq '2f00') {
-        # All Link DB
-        my ($rrw, $address, $l, $record) = unpack('xCH[4]Ca[8]x', $data);
-        if ($rrw == 1) {
-            my $record = "ALDB($address) " . decode_aldb($record) . "\n";
-            $self->device($from)->_receive_aldb($record);
-        }
-    }
-
-    return 1;
+    return $self->device($from)->_receive_extended($from, $to, $flag, $command, $data);
 }
 
 sub decode_all_link_record {
@@ -465,32 +446,6 @@ sub decode_all_link_record {
     $im_aldb_listener->("ALDB(n) " . decode_aldb($record) . "\n");
 
     return 1;
-}
-
-sub decode_aldb {
-    my $input = shift;
-
-    die "Wrong DB entry length" unless length($input) == 8;
-
-    my @output;
-
-    my ($control, $group, $address, $d1, $d2, $d3) = unpack('CH[2]H[6]H[2]H[2]H[2]', $input);
-
-    if ($control & 128) {
-        push @output, "In Use";
-    }
-
-    push @output, ($control & 64) ? "Master" : "Slave";
-
-    if ($control & 2) {
-        push @output, "Next";
-    }
-
-    if (my $name = get_name($address)) {
-        $address .= "($name)";
-    }
-
-    return "Group: $group Address: $address Control: " . $control . " [" . join(',', @output) . "] $d1 $d2 $d3";
 }
 
 1;

@@ -4,6 +4,7 @@ use strict;
 use warnings;
 
 use Scalar::Util qw(weaken);
+use Insteon::Util qw(decode_aldb);
 
 our %devices;
 
@@ -232,6 +233,40 @@ sub _receive_aldb {
     } else {
         print "Unsolicited ALDB record: " . $record;
     }
+}
+
+sub _receive_standard {
+    my $self = shift;
+    my ($from, $to, $flag, $command) = @_;
+
+    return 1;
+}
+
+sub _receive_extended {
+    my $self = shift;
+    my ($from, $to, $flag, $command, $data) = @_;
+
+    if ($command eq '0300') {
+        # Product Data Response
+        # D1: 0x00, D2-D4: Product Key, D5: DevCat, D6: SubCat, D7: Firmware, D8-D14: unspec
+        my ($prod_key, $dev_cat, $sub_cat, $firmware) = unpack('xH[6]H[2]H[2]H[2]', $data);
+        print "Product Data PK: $prod_key Category: $dev_cat/$sub_cat Firmware: $firmware\n";
+    }
+
+    if ($command eq '2e00') {
+        my ($bg, $verb, $x10h, $x10u) = unpack('H[2]H[2]xxH[2]H[2]', $data);
+    }
+
+    if ($command eq '2f00') {
+        # All Link DB
+        my ($rrw, $address, $l, $record) = unpack('xCH[4]Ca[8]x', $data);
+        if ($rrw == 1) {
+            my $record = "ALDB($address) " . decode_aldb($record) . "\n";
+            $self->_receive_aldb($record);
+        }
+    }
+
+    return 1;
 }
 
 # Write ALDB D2 0x02, D3-D4 address, D5 number of bytes (0x01-0x08), D6-D13 data to write.
