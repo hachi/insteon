@@ -1,0 +1,20 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use lib 'lib';
+
+use Insteon::PLM;
+
+my $command = shift;
+my $device = shift;
+
+my $plm = Insteon::PLM->new('/dev/ttyUSB0');
+
+my $cb = sub {
+    print @_;
+};
+
+$plm->device($device)->$command($cb);
+$plm->loop();
