@@ -239,6 +239,10 @@ sub _receive_standard {
     my $self = shift;
     my ($from, $to, $flag, $command) = @_;
 
+    if ($command =~ m/^0d/i) {
+        print "Insteon engine version: $command\n";
+    }
+
     return 1;
 }
 
