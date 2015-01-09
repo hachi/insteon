@@ -13,7 +13,8 @@ my $device = shift;
 my $plm = Insteon::PLM->new('/dev/ttyUSB0');
 
 my $cb = sub {
-    print @_;
+    my $dself = shift;
+    print join(", ", @_) . "\n";
 };
 
 $plm->device($device)->$command($cb);
