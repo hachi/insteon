@@ -19,6 +19,8 @@ sub get {
         address => $address,
         plm     => $plm,
         locks   => {},
+        standard_handlers => [],
+        extended_handlers => [],
     }, (ref $class || $class);
 
     $devices{$address} = $self;
@@ -38,7 +40,24 @@ sub _extended {
 
 sub get_product_data {
     my $self = shift;
+    my $callback = shift;
+
+    return if $self->{locks}->{get_product_data};
+
+    push @{$self->{'extended_handlers'}}, sub {
+        my ($from, $to, $flag, $command, $data) = @_;
+        if ($command eq '0300') {
+            delete $self->{locks}->{get_product_data};
+            # Product Data Response
+            # D1: 0x00, D2-D4: Product Key, D5: DevCat, D6: SubCat, D7: Firmware, D8-D14: unspec
+            my ($prod_key, $dev_cat, $sub_cat, $firmware) = unpack('xH[6]H[2]H[2]H[2]', $data);
+            $callback->($self, "Product Data PK: $prod_key Category: $dev_cat/$sub_cat Firmware: $firmware");
+            return 1;
+        }
+    };
+
     $self->_standard(qw(0300), sub {
+        $self->{locks}->{get_product_data} = $self->{plm}->_loop_token();
     });
 }
 
@@ -77,6 +96,22 @@ sub start_unlink {
 
 sub get_engine {
     my $self = shift;
+    my $callback = shift;
+
+    return if $self->{locks}->{get_engine};
+
+    push @{$self->{'standard_handlers'}}, sub {
+        my ($from, $to, $flag, $command) = @_;
+
+        if ($command =~ m/^0d([0-9a-f]{2})/i) {
+            my $version = lc($1);
+            delete $self->{locks}->{get_engine};
+            my $verstr = { '00' => 'i1', '01' => 'i2', '02' => 'i2cs', 'ff' => 'unlinked' }->{$version};
+            $callback->($self, ($verstr || 'unknown'), $version);
+            return 1;
+        }
+        return 0;
+    };
 
     $self->_standard(qw(0D00), sub {
         $self->{locks}->{get_engine} = $self->{plm}->_loop_token();
@@ -207,71 +242,57 @@ sub read_aldb {
     my $self = shift;
     my $callback = shift;
 
-    die if $self->{aldb_lock};
-    $self->{aldb_lock} = $self->{plm}->_loop_token();
+    die if $self->{locks}->{read_aldb};
 
     my @records;
 
-    my $listener = sub {
-        push @records, @_;
-        unless ($records[-1] =~ m/\bNext\b/) {
-            delete $self->{aldb_lock};
-            delete $self->{aldb_listener};
-            $callback->(@records);
-            return;
+    push @{$self->{'extended_handlers'}}, sub {
+        my ($from, $to, $flag, $command, $data) = @_;
+
+        if ($command eq '2f00') {
+            # All Link DB
+            my ($rrw, $address, $l, $record) = unpack('xCH[4]Ca[8]x', $data);
+            if ($rrw == 1) {
+                my $record = "ALDB($address) " . decode_aldb($record);
+                push @records, $record;
+                # Advance timeout if we have one
+
+                unless ($record =~ m/\bNext\b/) {
+                    delete $self->{locks}->{read_aldb};
+                    $callback->($self, join("\n", @records));
+                    return 1;
+                }
+            }
         }
-        # Advance timeout if we have one
     };
 
     $self->_extended(qw(2f00 0000000000000000000000000000), sub {
-        $self->{aldb_listener} = $listener;
+        $self->{locks}->{read_aldb} = $self->{plm}->_loop_token();
     });
-}
-
-sub _receive_aldb {
-    my $self = shift;
-    my $record = shift;
-    if (my $listener = $self->{aldb_listener}) {
-        $listener->($record);
-    } else {
-        print "Unsolicited ALDB record: " . $record;
-    }
 }
 
 sub _receive_standard {
     my $self = shift;
     my ($from, $to, $flag, $command) = @_;
 
-    if ($command =~ m/^0d/i) {
-        print "Insteon engine version: $command\n";
-        delete $self->{locks}->{get_engine};
+    foreach my $handler (@{$self->{standard_handlers}}) {
+        return 1 if $handler->(@_);
     }
 
-    return 1;
+    return 0;
 }
 
 sub _receive_extended {
     my $self = shift;
     my ($from, $to, $flag, $command, $data) = @_;
 
-    if ($command eq '0300') {
-        # Product Data Response
-        # D1: 0x00, D2-D4: Product Key, D5: DevCat, D6: SubCat, D7: Firmware, D8-D14: unspec
-        my ($prod_key, $dev_cat, $sub_cat, $firmware) = unpack('xH[6]H[2]H[2]H[2]', $data);
-        print "Product Data PK: $prod_key Category: $dev_cat/$sub_cat Firmware: $firmware\n";
+    foreach my $handler (@{$self->{extended_handlers}}) {
+        # FIXME NEED TO REMOVE A HANDLER IF IT CATCHES A MESSAGE
+        return 1 if $handler->(@_);
     }
 
     if ($command eq '2e00') {
         my ($bg, $verb, $x10h, $x10u) = unpack('H[2]H[2]xxH[2]H[2]', $data);
-    }
-
-    if ($command eq '2f00') {
-        # All Link DB
-        my ($rrw, $address, $l, $record) = unpack('xCH[4]Ca[8]x', $data);
-        if ($rrw == 1) {
-            my $record = "ALDB($address) " . decode_aldb($record) . "\n";
-            $self->_receive_aldb($record);
-        }
     }
 
     return 1;
