@@ -6,6 +6,10 @@ use warnings;
 use Scalar::Util qw(weaken);
 use Insteon::Util qw(decode_aldb);
 
+sub IGNORED () { 0 }
+sub HANDLED () { 1 }
+sub DONE    () { 2 }
+
 our %devices;
 
 sub get {
@@ -46,14 +50,16 @@ sub get_product_data {
 
     push @{$self->{'extended_handlers'}}, sub {
         my ($from, $to, $flag, $command, $data) = @_;
+        return IGNORED unless Insteon::PLM::MSG_DIRECT_ACK($flag);
         if ($command eq '0300') {
             delete $self->{locks}->{get_product_data};
             # Product Data Response
             # D1: 0x00, D2-D4: Product Key, D5: DevCat, D6: SubCat, D7: Firmware, D8-D14: unspec
             my ($prod_key, $dev_cat, $sub_cat, $firmware) = unpack('xH[6]H[2]H[2]H[2]', $data);
             $callback->($self, "Product Data PK: $prod_key Category: $dev_cat/$sub_cat Firmware: $firmware");
-            return 1;
+            return DONE;
         }
+        return IGNORED;
     };
 
     $self->_standard(qw(0300), sub {
@@ -63,7 +69,24 @@ sub get_product_data {
 
 sub get_device_string {
     my $self = shift;
+    my $callback = shift;
+
+    return if $self->{locks}->{get_device_string};
+
+    push @{$self->{'extended_handlers'}}, sub {
+        my ($from, $to, $flag, $command, $data) = @_;
+        return IGNORED unless Insteon::PLM::MSG_DIRECT_ACK($flag);
+        if ($command eq '0302') {
+            delete $self->{locks}->{get_device_string};
+            my ($string) = unpack('a*', $data);
+            $callback->($self, "ASCII: $string HEX: $data");
+            return DONE;
+        }
+        return IGNORED;
+    };
+
     $self->_standard(qw(0302), sub {
+        $self->{locks}->{get_device_string} = $self->{plm}->_loop_token();
     });
 }
 
@@ -103,14 +126,15 @@ sub get_engine {
     push @{$self->{'standard_handlers'}}, sub {
         my ($from, $to, $flag, $command) = @_;
 
+        return IGNORED unless Insteon::PLM::MSG_DIRECT_ACK($flag);
         if ($command =~ m/^0d([0-9a-f]{2})/i) {
             my $version = lc($1);
             delete $self->{locks}->{get_engine};
             my $verstr = { '00' => 'i1', '01' => 'i2', '02' => 'i2cs', 'ff' => 'unlinked' }->{$version};
             $callback->($self, ($verstr || 'unknown'), $version);
-            return 1;
+            return DONE;
         }
-        return 0;
+        return IGNORED;
     };
 
     $self->_standard(qw(0D00), sub {
@@ -246,24 +270,33 @@ sub read_aldb {
 
     my @records;
 
+    push @{$self->{'standard_handlers'}}, sub {
+        my ($from, $to, $flag, $command) = @_;
+        return IGNORED unless Insteon::PLM::MSG_DIRECT_ACK($flag);
+        return IGNORED unless $command eq '2f00';
+        return DONE;
+    };
+
     push @{$self->{'extended_handlers'}}, sub {
         my ($from, $to, $flag, $command, $data) = @_;
 
-        if ($command eq '2f00') {
-            # All Link DB
-            my ($rrw, $address, $l, $record) = unpack('xCH[4]Ca[8]x', $data);
-            if ($rrw == 1) {
-                my $record = "ALDB($address) " . decode_aldb($record);
-                push @records, $record;
-                # Advance timeout if we have one
+        return IGNORED unless $command eq '2f00';
 
-                unless ($record =~ m/\bNext\b/) {
-                    delete $self->{locks}->{read_aldb};
-                    $callback->($self, join("\n", @records));
-                    return 1;
-                }
+        # All Link DB
+        my ($rrw, $address, $l, $record) = unpack('xCH[4]Ca[8]x', $data);
+        if ($rrw == 1) {
+            my $raw_record = decode_aldb($record);
+            my $record = "ALDB($address) " . $raw_record;
+            push @records, $record;
+            # Advance timeout if we have one
+
+            if ($raw_record->last) {
+                delete $self->{locks}->{read_aldb};
+                $callback->($self, join("\n", @records));
+                return DONE;
             }
         }
+        return HANDLED;
     };
 
     $self->_extended(qw(2f00 0000000000000000000000000000), sub {
@@ -276,8 +309,19 @@ sub _receive_standard {
     my ($from, $to, $flag, $command) = @_;
 
     foreach my $handler (@{$self->{standard_handlers}}) {
-        return 1 if $handler->(@_);
+        my $rv = $handler->(@_);
+        if ($rv == DONE) {
+            $handler = undef;
+            $self->prune_handlers();
+            return 1;
+        }
+
+        if ($rv == HANDLED) {
+            return 1;
+        }
     }
+
+    warn "Unhandled standard message: $command\n";
 
     return 0;
 }
@@ -287,15 +331,33 @@ sub _receive_extended {
     my ($from, $to, $flag, $command, $data) = @_;
 
     foreach my $handler (@{$self->{extended_handlers}}) {
-        # FIXME NEED TO REMOVE A HANDLER IF IT CATCHES A MESSAGE
-        return 1 if $handler->(@_);
+        my $rv = $handler->(@_);
+        if ($rv == DONE) {
+            $handler = undef;
+            $self->prune_handlers();
+            return 1;
+        }
+
+        if ($rv == HANDLED) {
+            return 1;
+        }
     }
+
+    my $hex = unpack('H*', $data);
+    warn "Unhandled extended message: $command / $hex\n";
 
     if ($command eq '2e00') {
         my ($bg, $verb, $x10h, $x10u) = unpack('H[2]H[2]xxH[2]H[2]', $data);
     }
 
     return 1;
+}
+
+sub prune_handlers {
+    my $self = shift;
+    foreach my $key (qw(standard_handlers extended_handlers)) {
+        @{$self->{$key}} = grep { defined } @{$self->{$key}};
+    }
 }
 
 # Write ALDB D2 0x02, D3-D4 address, D5 number of bytes (0x01-0x08), D6-D13 data to write.

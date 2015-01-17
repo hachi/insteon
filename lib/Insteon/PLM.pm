@@ -389,6 +389,15 @@ sub device {
     return Insteon::Device->get($self, $address);
 }
 
+sub MSG_DIRECT         { (shift() & 0b11100000) == 0b00000000 }
+sub MSG_DIRECT_ACK     { (shift() & 0b11100000) == 0b00100000 }
+sub MSG_DIRECT_NAK     { (shift() & 0b11100000) == 0b10100000 }
+sub MSG_BROADCAST      { (shift() & 0b11100000) == 0b10000000 }
+sub MSG_AL_BROADCAST   { (shift() & 0b11100000) == 0b11000000 }
+sub MSG_AL_CLEANUP     { (shift() & 0b11100000) == 0b01000000 }
+sub MSG_AL_CLEANUP_ACK { (shift() & 0b11100000) == 0b01100000 }
+sub MSG_AL_CLEANUP_NAK { (shift() & 0b11100000) == 0b11100000 }
+
 sub debug_message {
     my ($from, $to, $flag, $command, $data) = @_;
 
@@ -401,14 +410,14 @@ sub debug_message {
     my ($hexdata) = defined($data) ? unpack('H[28]', $data) : '';
 
     my $extra = '';
-    $extra .= " Direct message"             if (($flag & 0xE0) == 0);
-    $extra .= " ACK Direct message"         if (($flag & 0xE0) == 0x20);
-    $extra .= " NAK Direct message"         if (($flag & 0xE0) == 0xA0);
-    $extra .= " Broadcast message"          if (($flag & 0xE0) == 0x80);
-    $extra .= " ALL-Link Broadcast Message" if (($flag & 0xE0) == 0xC0);
-    $extra .= " ALL-Link Broadcast Message" if (($flag & 0xE0) == 0x40);
-    $extra .= " ACK ALL-Link Message"       if (($flag & 0xE0) == 0x60);
-    $extra .= " NAK ALL-Link Message"       if (($flag & 0xE0) == 0xE0);
+    $extra .= " Direct message"                     if MSG_DIRECT($flag);
+    $extra .= " ACK Direct message"                 if MSG_DIRECT_ACK($flag);
+    $extra .= " NAK Direct message"                 if MSG_DIRECT_NAK($flag);
+    $extra .= " Broadcast message"                  if MSG_BROADCAST($flag);
+    $extra .= " ALL-Link Broadcast Message"         if MSG_AL_BROADCAST($flag);
+    $extra .= " ALL-Link Cleanup Message"           if MSG_AL_CLEANUP($flag);
+    $extra .= " ALL-Link Cleanup ACK Message"       if MSG_AL_CLEANUP_ACK($flag);
+    $extra .= " ALL-Link Cleanup NAK Message"       if MSG_AL_CLEANUP_NAK($flag);
 
     print "[$from -> $to] $command $hexdata$extra\n";
     return;

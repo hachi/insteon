@@ -42,9 +42,31 @@ sub decode_aldb {
 
     die "Wrong DB entry length" unless length($input) == 8;
 
-    my @output;
-
     my ($control, $group, $address, $d1, $d2, $d3) = unpack('CH[2]H[6]H[2]H[2]H[2]', $input);
+
+    return bless {
+        group   => $group,
+        address => $address,
+        control => $control,
+        data    => [ $d1, $d2, $d3 ],
+    }, "Insteon::Util::ALDBEntry";
+}
+
+package Insteon::Util::ALDBEntry;
+
+use overload '""' => 'as_string';
+
+sub as_string {
+    my $self = shift;
+
+    my $group   = $self->{group};
+    my $address = $self->{address};
+    my $control = $self->{control};
+    my $data    = $self->{data};
+
+    my ($d1, $d2, $d3) = @$data;
+
+    my @output;
 
     if ($control & 128) {
         push @output, "In Use";
@@ -56,11 +78,46 @@ sub decode_aldb {
         push @output, "Next";
     }
 
-    if (my $name = get_name($address)) {
+    if (my $name = Insteon::Util::get_name($address)) {
         $address .= "($name)";
     }
 
     return "Group: $group Address: $address Control: " . $control . " [" . join(',', @output) . "] $d1 $d2 $d3";
+}
+
+sub device_address {
+    my $self = shift;
+    return $self->{address};
+}
+
+sub device_name {
+    my $self = shift;
+    return Insteon::Util::get_name($self->{address});
+}
+
+sub in_use {
+    my $self = shift;
+    return ($self->{control} & 128) ? 1 : 0;
+}
+
+sub master {
+    my $self = shift;
+    return ($self->{control} & 64) ? 1 : 0;
+}
+
+sub slave {
+    my $self = shift;
+    return ($self->{control} & 64) ? 0 : 1;
+}
+
+sub next {
+    my $self = shift;
+    return ($self->{control} & 2) ? 1 : 0;
+}
+
+sub last {
+    my $self = shift;
+    return ($self->{control} & 2) ? 0 : 1;
 }
 
 1;
