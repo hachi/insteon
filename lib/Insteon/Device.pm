@@ -283,9 +283,9 @@ sub read_aldb {
         return IGNORED unless $command eq '2f00';
 
         # All Link DB
-        my ($rrw, $address, $l, $record) = unpack('xCH[4]Ca[8]x', $data);
+        my ($rrw, $address, $l, $record_bytes) = unpack('xCH[4]Ca[8]x', $data);
         if ($rrw == 1) {
-            my $raw_record = decode_aldb($record);
+            my $raw_record = decode_aldb($record_bytes);
             my $record = "ALDB($address) " . $raw_record;
             push @records, $record;
             # Advance timeout if we have one
