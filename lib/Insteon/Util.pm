@@ -5,7 +5,7 @@ use warnings;
 
 use base 'Exporter';
 
-our @EXPORT_OK = qw(&want_name &want_id &get_name &decode_aldb &decode_product_data);
+our @EXPORT_OK = qw(&want_name &want_id &get_name &decode_aldb &decode_product_data &decode_engine);
 
 my %device_by_name;
 my %device_by_id;
@@ -52,6 +52,14 @@ sub decode_product_data {
     }, "Insteon::Util::ProductData";
 }
 
+sub decode_engine {
+    my $data = shift;
+
+    return bless {
+        version => $data,
+    }, "Insteon::Util::Engine";
+}
+
 sub decode_aldb {
     my $input = shift;
 
@@ -78,6 +86,75 @@ sub as_string {
     my $sub_cat    = $self->{sub_cat};
     my $firmware   = $self->{firmware};
     return "Product Data PK: $prod_key Category: $dev_cat/$sub_cat Firmware: $firmware";
+}
+
+sub dev_cat {
+    my $self = shift;
+    return $self->{dev_cat};
+}
+
+sub sub_cat {
+    my $self = shift;
+    return $self->{dev_cat};
+}
+
+sub is_general {
+    my $self = shift;
+    return $self->dev_cat == "00" ? 1 : 0;
+}
+
+sub is_lighting_dimmable {
+    my $self = shift;
+    return $self->dev_cat == "01" ? 1 : 0;
+}
+
+sub is_lighting_switched {
+    my $self = shift;
+    return $self->dev_cat == "01" ? 1 : 0;
+}
+
+sub is_lighting {
+    my $self = shift;
+    return $self->is_lighting_dimmable || $self->is_lighting_switched;
+}
+
+package Insteon::Util::Engine;
+
+use overload '""' => 'as_string';
+
+sub as_string {
+    my $self = shift;
+
+    my $version = $self->{version};
+    my $verstr = { '00' => 'i1', '01' => 'i2', '02' => 'i2cs', 'ff' => 'unlinked' }->{$version};
+
+    return sprintf "%s(%s)", $version, $verstr || 'unknown';
+}
+
+sub version {
+    my $self = shift;
+
+    return $self->{version};
+}
+
+sub is_i1 {
+    my $self = shift;
+    return $self->version == '00' ? 1 : 0;
+}
+
+sub is_i2 {
+    my $self = shift;
+    return $self->version == '01' ? 1 : 0;
+}
+
+sub is_i2cs {
+    my $self = shift;
+    return $self->version == '02' ? 1 : 0;
+}
+
+sub is_unlinked {
+    my $self = shift;
+    return $self->version == 'FF' ? 1 : 0;
 }
 
 package Insteon::Util::ALDBEntry;

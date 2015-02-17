@@ -4,7 +4,7 @@ use strict;
 use warnings;
 
 use Scalar::Util qw(weaken);
-use Insteon::Util qw(decode_aldb decode_product_data);
+use Insteon::Util qw(decode_aldb decode_product_data decode_engine);
 
 sub IGNORED () { 0 }
 sub HANDLED () { 1 }
@@ -128,15 +128,14 @@ sub get_engine {
 
     return if $self->{locks}->{get_engine};
 
-    push @{$self->{'standard_handlers'}}, sub {
+    my $ack_handler = sub {
         my ($from, $to, $flag, $command) = @_;
 
         return IGNORED unless Insteon::PLM::MSG_DIRECT_ACK($flag);
         if ($command =~ m/^0d([0-9a-f]{2})/i) {
             my $version = lc($1);
             delete $self->{locks}->{get_engine};
-            my $verstr = { '00' => 'i1', '01' => 'i2', '02' => 'i2cs', 'ff' => 'unlinked' }->{$version};
-            $callback->($self, ($verstr || 'unknown'), $version);
+            $callback->($self, decode_engine($version));
             return DONE;
         }
         return IGNORED;
@@ -144,6 +143,7 @@ sub get_engine {
 
     $self->_standard(qw(0D00), sub {
         $self->{locks}->{get_engine} = $self->{plm}->_loop_token();
+        push @{$self->{'standard_handlers'}}, $ack_handler;
     });
 }
 
