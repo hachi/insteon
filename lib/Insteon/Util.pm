@@ -5,7 +5,7 @@ use warnings;
 
 use base 'Exporter';
 
-our @EXPORT_OK = qw(&want_name &want_id &get_name &decode_aldb);
+our @EXPORT_OK = qw(&want_name &want_id &get_name &decode_aldb &decode_product_data);
 
 my %device_by_name;
 my %device_by_id;
@@ -37,6 +37,21 @@ sub want_id {
     return $device_by_name{$input} || $input;
 }
 
+sub decode_product_data {
+    my $data = shift;
+
+    # Product Data Response
+    # D1: 0x00, D2-D4: Product Key, D5: DevCat, D6: SubCat, D7: Firmware, D8-D14: unspec
+    my ($prod_key, $dev_cat, $sub_cat, $firmware) = unpack('xH[6]H[2]H[2]H[2]', $data);
+
+    return bless {
+        prod_key   => $prod_key,
+        dev_cat    => $dev_cat,
+        sub_cat    => $sub_cat,
+        firmware   => $firmware,
+    }, "Insteon::Util::ProductData";
+}
+
 sub decode_aldb {
     my $input = shift;
 
@@ -50,6 +65,19 @@ sub decode_aldb {
         control => $control,
         data    => [ $d1, $d2, $d3 ],
     }, "Insteon::Util::ALDBEntry";
+}
+
+package Insteon::Util::ProductData;
+
+use overload '""' => 'as_string';
+
+sub as_string {
+    my $self = shift;
+    my $prod_key   = $self->{prod_key};
+    my $dev_cat    = $self->{dev_cat};
+    my $sub_cat    = $self->{sub_cat};
+    my $firmware   = $self->{firmware};
+    return "Product Data PK: $prod_key Category: $dev_cat/$sub_cat Firmware: $firmware";
 }
 
 package Insteon::Util::ALDBEntry;

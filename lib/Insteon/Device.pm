@@ -4,7 +4,7 @@ use strict;
 use warnings;
 
 use Scalar::Util qw(weaken);
-use Insteon::Util qw(decode_aldb);
+use Insteon::Util qw(decode_aldb decode_product_data);
 
 sub IGNORED () { 0 }
 sub HANDLED () { 1 }
@@ -48,22 +48,27 @@ sub get_product_data {
 
     return if $self->{locks}->{get_product_data};
 
-    push @{$self->{'extended_handlers'}}, sub {
+    my $message_handler = sub {
         my ($from, $to, $flag, $command, $data) = @_;
-        return IGNORED unless Insteon::PLM::MSG_DIRECT_ACK($flag);
         if ($command eq '0300') {
             delete $self->{locks}->{get_product_data};
-            # Product Data Response
-            # D1: 0x00, D2-D4: Product Key, D5: DevCat, D6: SubCat, D7: Firmware, D8-D14: unspec
-            my ($prod_key, $dev_cat, $sub_cat, $firmware) = unpack('xH[6]H[2]H[2]H[2]', $data);
-            $callback->($self, "Product Data PK: $prod_key Category: $dev_cat/$sub_cat Firmware: $firmware");
+            $callback->($self, decode_product_data($data));
             return DONE;
         }
         return IGNORED;
     };
 
+    my $ack_handler = sub {
+        my ($from, $to, $flag, $command) = @_;
+        return IGNORED unless Insteon::PLM::MSG_DIRECT_ACK($flag);
+        return IGNORED unless $command eq '0300';
+        push @{$self->{'extended_handlers'}}, $message_handler;
+        return DONE;
+    };
+
     $self->_standard(qw(0300), sub {
         $self->{locks}->{get_product_data} = $self->{plm}->_loop_token();
+        push @{$self->{'standard_handlers'}}, $ack_handler;
     });
 }
 
