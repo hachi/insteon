@@ -110,7 +110,7 @@ sub is_lighting_dimmable {
 
 sub is_lighting_switched {
     my $self = shift;
-    return $self->dev_cat == "01" ? 1 : 0;
+    return $self->dev_cat == "02" ? 1 : 0;
 }
 
 sub is_lighting {
