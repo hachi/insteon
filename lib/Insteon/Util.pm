@@ -200,6 +200,11 @@ sub device_name {
     return Insteon::Util::get_name($self->{address});
 }
 
+sub group {
+    my $self = shift;
+    return $self->{group};
+}
+
 sub in_use {
     my $self = shift;
     return ($self->{control} & 128) ? 1 : 0;
@@ -223,6 +228,52 @@ sub next {
 sub last {
     my $self = shift;
     return ($self->{control} & 2) ? 0 : 1;
+}
+
+package Insteon::Util::ALDBLinear;
+
+use overload '""' => 'as_string';
+
+sub new {
+    my $ref = shift;
+
+    return bless {
+    }, (ref $ref || $ref);
+}
+
+sub as_string {
+    my $self = shift;
+
+    my @output;
+
+    foreach my $address (sort { $b cmp $a } keys %$self) {
+        push @output, "ALDB($address) " . $self->{$address};
+    }
+
+    return join("\n", @output);
+}
+
+package Insteon::Util::ALDBList;
+
+use overload '""' => 'as_string';
+
+sub new {
+    my $ref = shift;
+
+    return bless [
+    ], (ref $ref || $ref);
+}
+
+sub as_string {
+    my $self = shift;
+
+    my @output;
+
+    foreach my $entry (@$self) {
+        push @output, "ALDB(n) " . $entry;
+    }
+
+    return join("\n", @output);
 }
 
 1;

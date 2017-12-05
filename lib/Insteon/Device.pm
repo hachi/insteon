@@ -6,6 +6,8 @@ use warnings;
 use Scalar::Util qw(weaken);
 use Insteon::Util qw(decode_aldb decode_product_data decode_engine);
 
+use Time::HiRes qw(tv_interval gettimeofday);
+
 sub IGNORED () { 0 }
 sub HANDLED () { 1 }
 sub DONE    () { 2 }
@@ -23,8 +25,7 @@ sub get {
         address => $address,
         plm     => $plm,
         locks   => {},
-        standard_handlers => [],
-        extended_handlers => [],
+        handlers => [],
     }, (ref $class || $class);
 
     $devices{$address} = $self;
@@ -40,6 +41,20 @@ sub _standard {
 sub _extended {
     my $self = shift;
     return $self->{plm}->send_insteon_extended($self->{address}, @_);
+}
+
+sub _extended_cs {
+    my $self = shift;
+    my $command = shift;
+    my $data = shift;
+
+    my $combined = pack("H[4]H[26]", $command, $data);
+    my $sum  = ~ unpack('%A*', $combined) + 1 & 0xff;
+
+    #printf("Input %s\n", unpack("H*", $combined));
+    #printf("Sum: %x\n", $sum);
+
+    return $self->{plm}->send_insteon_extended($self->{address}, $command, $data . sprintf("%02x", $sum), @_);
 }
 
 sub get_product_data {
@@ -62,13 +77,13 @@ sub get_product_data {
         my ($from, $to, $flag, $command) = @_;
         return IGNORED unless Insteon::PLM::MSG_DIRECT_ACK($flag);
         return IGNORED unless $command eq '0300';
-        push @{$self->{'extended_handlers'}}, $message_handler;
+        push @{$self->{'handlers'}}, $message_handler;
         return DONE;
     };
 
     $self->_standard(qw(0300), sub {
         $self->{locks}->{get_product_data} = $self->{plm}->_loop_token();
-        push @{$self->{'standard_handlers'}}, $ack_handler;
+        push @{$self->{'handlers'}}, $ack_handler;
     });
 }
 
@@ -78,11 +93,39 @@ sub get_device_string {
 
     return if $self->{locks}->{get_device_string};
 
-    push @{$self->{'extended_handlers'}}, sub {
+    push @{$self->{'handlers'}}, sub {
         my ($from, $to, $flag, $command, $data) = @_;
+
+        if (Insteon::PLM::MSG_STANDARD($flag) and Insteon::PLM::MSG_DIRECT_NAK($flag) and $command eq '03ff') {
+            delete $self->{locks}->{get_device_string};
+            $callback->($self, "Declined (standard) - probably not in ALDB but supported");
+            return DONE;
+        }
+
+        if ($command eq '0300') {
+            if (Insteon::PLM::MSG_STANDARD($flag)) {
+                if (Insteon::PLM::MSG_DIRECT_NAK($flag)) {
+                    delete $self->{locks}->{get_device_string};
+                    $callback->($self, "Unsupported (standard) - probably not in ALDB and not supported");
+                    return DONE;
+                }
+                return HANDLED if Insteon::PLM::MSG_DIRECT_ACK($flag);
+            }
+            if (Insteon::PLM::MSG_EXTENDED($flag)) {
+                delete $self->{locks}->{get_device_string};
+                $callback->($self, "Unsupported (extended) - probably in ALDB but not supported");
+                return DONE;
+            }
+        }
+
         return IGNORED unless Insteon::PLM::MSG_DIRECT_ACK($flag);
+        
         if ($command eq '0302') {
             delete $self->{locks}->{get_device_string};
+            if (Insteon::PLM::MSG_STANDARD($flag)) {
+                $callback->($self, "Device string is unset");
+                return DONE;
+            }
             my ($string) = unpack('a*', $data);
             $callback->($self, "ASCII: $string HEX: $data");
             return DONE;
@@ -102,13 +145,105 @@ sub set_device_string {
     });
 }
 
+sub exit_link {
+    my $self = shift;
+    my $callback = shift;
+
+    my $handlers = $self->{handlers};
+
+    push @$handlers, sub {
+        my ($from, $to, $flag, $command, $data) = @_;
+
+        return IGNORED unless $command =~ /^08/;
+        if (Insteon::PLM::MSG_STANDARD($flag)) {
+            if (Insteon::PLM::MSG_DIRECT_NAK($flag)) {
+                print STDERR "Device decliened replying\n";
+                delete $self->{locks}->{link};
+                $callback->($self, "declined");
+                return DONE;
+            }
+
+            if (Insteon::PLM::MSG_DIRECT_ACK($flag)) {
+                delete $self->{locks}->{link};
+                $callback->($self, "exited linking mode");
+                return DONE;
+            }
+            return IGNORED;
+        }
+    };
+
+    $self->_standard(qw(0800), sub {
+        $self->{locks}->{link} = $self->{plm}->_loop_token();
+    });
+}
+
 sub start_link {
     my $self = shift;
+    my $callback = shift;
     my $group = shift;
 
-    my $group_hex = unpack("H2", $group);
+    my $group_hex = sprintf("%.2X", 0 + $group);
+
+    my $handlers = $self->{handlers};
+
+    push @$handlers, sub {
+        my ($from, $to, $flag, $command, $data) = @_;
+
+        return IGNORED unless $command =~ /^09/;
+        if (Insteon::PLM::MSG_STANDARD($flag)) {
+            if (Insteon::PLM::MSG_DIRECT_NAK($flag)) {
+                print STDERR "Device decliened replying\n";
+                delete $self->{locks}->{link};
+                $callback->($self, "declined");
+                return DONE;
+            }
+
+            if (Insteon::PLM::MSG_DIRECT_ACK($flag)) {
+                delete $self->{locks}->{link};
+                $callback->($self, "in linking mode");
+                return DONE;
+            }
+            return IGNORED;
+        }
+    };
 
     $self->_standard(qw(09) . $group_hex, sub {
+        $self->{locks}->{link} = $self->{plm}->_loop_token();
+    });
+}
+
+sub start_link_extended {
+    my $self = shift;
+    my $callback = shift;
+    my $group = shift;
+
+    my $group_hex = sprintf("%.2X", 0 + $group);
+
+    my $handlers = $self->{handlers};
+
+    push @$handlers, sub {
+        my ($from, $to, $flag, $command, $data) = @_;
+
+        return IGNORED unless $command =~ /^09/;
+        if (Insteon::PLM::MSG_STANDARD($flag)) {
+            if (Insteon::PLM::MSG_DIRECT_NAK($flag)) {
+                print STDERR "Device decliened replying\n";
+                delete $self->{locks}->{link};
+                $callback->($self, "declined");
+                return DONE;
+            }
+
+            if (Insteon::PLM::MSG_DIRECT_ACK($flag)) {
+                delete $self->{locks}->{link};
+                $callback->($self, "in linking mode");
+                return DONE;
+            }
+            return IGNORED;
+        }
+    };
+
+    $self->_extended_cs(qw(09) . $group_hex, '00000000000000000000000000', sub {
+        $self->{locks}->{link} = $self->{plm}->_loop_token();
     });
 }
 
@@ -131,6 +266,22 @@ sub get_engine {
     my $ack_handler = sub {
         my ($from, $to, $flag, $command) = @_;
 
+        if (Insteon::PLM::MSG_DIRECT_NAK($flag)) {
+		if ($command =~ m/^0d([0-9a-f]{2})/i) {
+		    my $code = lc($1);
+		    delete $self->{locks}->{get_engine};
+		    if ($code =~ m/ff/i) {
+			    $callback->($self, "failed not in aldb, implied >= i2cs");
+			    return DONE;
+			}
+		}
+            print STDERR "Device decliened replying\n";
+            delete $self->{locks}->{ping};
+            $callback->($self, "declined");
+            return DONE;
+        }
+
+
         return IGNORED unless Insteon::PLM::MSG_DIRECT_ACK($flag);
         if ($command =~ m/^0d([0-9a-f]{2})/i) {
             my $version = lc($1);
@@ -143,14 +294,43 @@ sub get_engine {
 
     $self->_standard(qw(0D00), sub {
         $self->{locks}->{get_engine} = $self->{plm}->_loop_token();
-        push @{$self->{'standard_handlers'}}, $ack_handler;
+        push @{$self->{'handlers'}}, $ack_handler;
     });
 }
 
 sub ping {
     my $self = shift;
+    my $callback = shift;
+
+    my $start_time;
+
+    my $handlers = $self->{handlers};
+
+    push @$handlers, sub {
+        my $elapsed = tv_interval($start_time);
+        my ($from, $to, $flag, $command, $data) = @_;
+
+        return IGNORED unless $command =~ /^0f/;
+        if (Insteon::PLM::MSG_STANDARD($flag)) {
+            if (Insteon::PLM::MSG_DIRECT_NAK($flag)) {
+                print STDERR "Device decliened replying\n";
+                delete $self->{locks}->{ping};
+                $callback->($self, "declined");
+                return DONE;
+            }
+
+            if (Insteon::PLM::MSG_DIRECT_ACK($flag)) {
+                delete $self->{locks}->{ping};
+                $callback->($self, "reply in $elapsed");
+                return DONE;
+            }
+            return IGNORED;
+        }
+    };
+
     $self->_standard(qw(0F00), sub {
         $self->{locks}->{ping} = $self->{plm}->_loop_token();
+        $start_time = [gettimeofday];
     });
 }
 
@@ -273,35 +453,50 @@ sub read_aldb {
 
     die if $self->{locks}->{read_aldb};
 
-    my @records;
+    my $aldb = Insteon::Util::ALDBLinear->new();
 
-    push @{$self->{'standard_handlers'}}, sub {
-        my ($from, $to, $flag, $command) = @_;
-        return IGNORED unless Insteon::PLM::MSG_DIRECT_ACK($flag);
-        return IGNORED unless $command eq '2f00';
-        return DONE;
-    };
-
-    push @{$self->{'extended_handlers'}}, sub {
+    my $handlers = $self->{handlers};
+    push @$handlers, sub {
         my ($from, $to, $flag, $command, $data) = @_;
-
-        return IGNORED unless $command eq '2f00';
-
-        # All Link DB
-        my ($rrw, $address, $l, $record_bytes) = unpack('xCH[4]Ca[8]x', $data);
-        if ($rrw == 1) {
-            my $raw_record = decode_aldb($record_bytes);
-            my $record = "ALDB($address) " . $raw_record;
-            push @records, $record;
-            # Advance timeout if we have one
-
-            if ($raw_record->last) {
+        return IGNORED unless $command =~ /^2f/;
+        if (Insteon::PLM::MSG_STANDARD($flag)) {
+            if (Insteon::PLM::MSG_DIRECT_NAK($flag)) {
+                print STDERR "Device decliened replying\n";
                 delete $self->{locks}->{read_aldb};
-                $callback->($self, join("\n", @records));
+                $callback->($self, "declined");
                 return DONE;
             }
+
+            if (Insteon::PLM::MSG_DIRECT_ACK($flag)) {
+                return HANDLED;
+            }
+#            return IGNORED unless Insteon::PLM::MSG_DIRECT_ACK($flag);
+#            if ($command eq '2f00') {
+#                printf STDERR "Standard message 2f00 in reply to ALDB read\n";
+#                return HANDLED;
+#            }
+#            if ($command eq '2fff') {
+#                printf STDERR "Standard message 2fff in reply to ALDB read\n";
+#                return HANDLED;
+#            }
+            return IGNORED;
+        } else {
+            # All Link DB
+            my ($rrw, $address, $l, $record_bytes) = unpack('xCH[4]Ca[8]x', $data);
+            if ($rrw == 1) {
+                my $raw_record = decode_aldb($record_bytes);
+		# FIXME Object abuse
+                $aldb->{$address} = $raw_record;
+                # Advance timeout if we have one
+
+                if ($raw_record->last) {
+                    delete $self->{locks}->{read_aldb};
+                    $callback->($self, $aldb);
+                    return DONE;
+                }
+            }
+            return HANDLED;
         }
-        return HANDLED;
     };
 
     $self->_extended(qw(2f00 0000000000000000000000000000), sub {
@@ -309,33 +504,12 @@ sub read_aldb {
     });
 }
 
-sub _receive_standard {
-    my $self = shift;
-    my ($from, $to, $flag, $command) = @_;
-
-    foreach my $handler (@{$self->{standard_handlers}}) {
-        my $rv = $handler->(@_);
-        if ($rv == DONE) {
-            $handler = undef;
-            $self->prune_handlers();
-            return 1;
-        }
-
-        if ($rv == HANDLED) {
-            return 1;
-        }
-    }
-
-    warn "Unhandled standard message: $command\n";
-
-    return 0;
-}
-
-sub _receive_extended {
+sub _receive {
     my $self = shift;
     my ($from, $to, $flag, $command, $data) = @_;
 
-    foreach my $handler (@{$self->{extended_handlers}}) {
+    my $handlers = $self->{handlers};
+    foreach my $handler (@$handlers) {
         my $rv = $handler->(@_);
         if ($rv == DONE) {
             $handler = undef;
@@ -348,8 +522,14 @@ sub _receive_extended {
         }
     }
 
-    my $hex = unpack('H*', $data);
-    warn "Unhandled extended message: $command / $hex\n";
+    if (Insteon::PLM::MSG_STANDARD($flag)) {
+        print "Unhandled standard message: ";
+        Insteon::PLM::debug_message(@_);
+        return;
+    }
+
+    print "Unhandled extended message: ";
+    Insteon::PLM::debug_message(@_);
 
     if ($command eq '2e00') {
         my ($bg, $verb, $x10h, $x10u) = unpack('H[2]H[2]xxH[2]H[2]', $data);
@@ -360,9 +540,8 @@ sub _receive_extended {
 
 sub prune_handlers {
     my $self = shift;
-    foreach my $key (qw(standard_handlers extended_handlers)) {
-        @{$self->{$key}} = grep { defined } @{$self->{$key}};
-    }
+    my $handlers = $self->{handlers};
+    @$handlers = grep { defined } @$handlers;
 }
 
 # Write ALDB D2 0x02, D3-D4 address, D5 number of bytes (0x01-0x08), D6-D13 data to write.
