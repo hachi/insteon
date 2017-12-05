@@ -3,9 +3,10 @@ package Insteon::PLM::Serial;
 use strict;
 use warnings;
 
-use IO::Termios;
 use Scalar::Util qw(weaken);
 use Errno qw(EAGAIN);
+
+use POSIX qw(B19200 CSIZE CS8 PARENB CSTOPB);
 
 sub DEBUG () { 0 }
 
@@ -20,8 +21,22 @@ sub DESTROY {
 sub open {
     my $package = shift;
     my $device = shift;
-    my $term = IO::Termios->open($device, "19200,8,n,1")
+    open my $term, '+<', $device
         or die "Cannot open $device - $!";
+
+    my $termios = POSIX::Termios->new;
+    $termios->getattr($term->fileno());
+    $termios->setispeed(B19200);
+    $termios->setospeed(B19200);
+
+    my $cflag = $termios->getcflag();
+    $cflag &= ~CSIZE; # Mask away Size
+    $cflag |= CS8; # 8 bit size
+    $cflag &= ~PARENB; # no Parity
+    $cflag &= ~CSTOPB; # 1 stop bit
+    $termios->setcflag($cflag);
+
+    $termios->setattr($term->fileno());
 
     $term->blocking(0);
 
