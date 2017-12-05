@@ -7,15 +7,17 @@ use lib 'lib';
 
 use Insteon::PLM;
 
-my $plm = Insteon::PLM->new('/dev/ttyUSB0');
+my $plm = Insteon::PLM->new('/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A60334HH-if00-port0');
+
+my $command = shift;
 
 # Beep everything?
-$plm->send_insteon_group(9, '30');
+#$plm->send_insteon_group(9, '30');
 
 my $cb = sub {
-    print @_;
+    print join(", ", @_) . "\n";
 };
 
-#$plm->get_im_aldb($cb);
+$plm->$command(@ARGV, $cb);
 
 $plm->loop();

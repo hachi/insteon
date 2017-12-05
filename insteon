@@ -5,17 +5,31 @@ use warnings;
 
 use lib 'lib';
 
+use Getopt::Long;
 use Insteon::PLM;
 
-my $command = shift;
-my $device = shift;
+GetOptions(
+    'unwind-method=s' => \(my $method),
+    'timeout=i'       => \(my $timeout = 10),
+    'plm=s'           => \(my $serial_port = '/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A60334HH-if00-port0'),
+);
 
-my $plm = Insteon::PLM->new('/dev/ttyUSB0');
+my $device = shift;
+my $command = shift;
+
+my $plm = Insteon::PLM->new($serial_port);
 
 my $cb = sub {
     my $dself = shift;
+
+    if ($method) {
+        print $_[0]->$method . "\n";
+        return;
+    }
+
     print join(", ", @_) . "\n";
 };
 
-$plm->device($device)->$command($cb);
+$plm->device($device)->$command($cb, @ARGV);
+alarm $timeout if $timeout > 0;
 $plm->loop();

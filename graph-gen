@@ -1,0 +1,130 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use lib 'lib';
+
+use Data::Dumper;
+use Getopt::Long;
+use Insteon::PLM;
+use Insteon::Util qw(want_id get_name);
+
+$|++;
+
+GetOptions(
+    'timeout=i'       => \(my $timeout = 10),
+    'plm=s'           => \(my $serial_port = '/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A60334HH-if00-port0'),
+    'group=i'         => \(my $limit_group),
+    'include-plm!'    => \(my $include_plm),
+    'outfile=s'       => \(my $outfile = "/var/www/html/out.png"),
+);
+
+open my $dot, '|-', 'dot', '-Tpng', "-o$outfile"
+	or die "Couldn't launch dot: $!\n";
+
+my $plm = Insteon::PLM->new($serial_port);
+
+alarm $timeout if $timeout > 0;
+
+my %already_done;
+
+print "digraph lights {\n";
+print $dot "digraph lights {\n";
+
+print "concentrate=true;\n";
+print $dot "concentrate=true;\n";
+
+print "rankdir=LR;\n";
+print $dot "rankdir=LR;\n";
+
+#print "color=gray;\n";
+#print $dot "color=gray;\n";
+#
+#print "bgcolor=black;\n";
+#print $dot "bgcolor=black;\n";
+
+my $plm_address;
+
+$plm->get_im_info(sub {
+		my ($status, $address, $category, $subcategory, $firmware) = @_;
+		$plm_address = $address;
+		if (my $name = get_name($address)) {
+			$plm_address .= "($name)";
+		}
+	});
+
+$plm->loop();
+
+{
+    my $pattern = sprintf(qq("%s";\n), $plm_address);
+    print $pattern;
+    print $dot $pattern;
+}
+
+if ($include_plm) {
+    $plm->get_im_aldb(sub {
+	    my $aldb = shift;
+	    foreach my $entry (@$aldb) {
+		next unless $entry->in_use;
+		if (defined $limit_group) {
+			next unless $entry->group == $limit_group;
+		}
+		my $address = $entry->device_address;
+		#next if $address eq '2ff70b';
+		if (my $name = get_name($address)) {
+			$address .= "($name)";
+		}
+		my $pattern = sprintf(qq("%s" -> "%s";\n), $plm_address, $address);
+		next if $already_done{$pattern}++ > 0;
+		print $pattern;
+		print $dot $pattern;
+	    }
+	});
+
+    $plm->loop();
+}
+
+foreach my $source (@ARGV) {
+	my $source_address = want_id($source);
+        if (my $source_name = get_name($source_address)) {
+        	$source_address .= "($source_name)";
+    	}
+
+	{
+	    my $pattern = sprintf(qq("%s";\n), $source_address);
+	    unless ($already_done{$pattern}++ > 0) {
+		print $pattern;
+		print $dot $pattern;
+	    }
+        }
+	my $cb = sub {
+	    my $dself = shift;
+	    my $aldb = shift;
+
+	    foreach my $key (keys %$aldb) {
+		my $entry = $aldb->{$key};
+		next unless $entry->in_use;
+		if (defined $limit_group) {
+			next unless $entry->group == $limit_group;
+		}
+		my $address = $entry->device_address;
+		if (my $name = get_name($address)) {
+			$address .= "($name)";
+		}
+		if ($address eq $plm_address) {
+			next unless $include_plm;
+		}
+		my $pattern = sprintf(qq("%s" -> "%s";\n), $source_address, $address);
+		next if $already_done{$pattern}++ > 0;
+		print $pattern;
+		print $dot $pattern;
+	    }
+	};
+
+	$plm->device($source)->read_aldb($cb, @ARGV);
+	$plm->loop();
+}
+
+print "}\n";
+print $dot "}\n";
