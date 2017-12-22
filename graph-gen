@@ -8,7 +8,7 @@ use lib 'lib';
 use Data::Dumper;
 use Getopt::Long;
 use Insteon::PLM;
-use Insteon::Util qw(want_id get_name);
+use Insteon::Util qw(need_id get_name);
 
 $|++;
 
@@ -86,7 +86,7 @@ if ($include_plm) {
 }
 
 foreach my $source (@ARGV) {
-	my $source_address = want_id($source);
+	my $source_address = need_id($source);
         if (my $source_name = get_name($source_address)) {
         	$source_address .= "($source_name)";
     	}

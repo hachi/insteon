@@ -5,7 +5,7 @@ use warnings;
 
 use Insteon::Device;
 use Insteon::PLM::Serial;
-use Insteon::Util qw(want_name want_id get_name decode_aldb);
+use Insteon::Util qw(want_name get_name decode_aldb need_id);
 
 sub LOOP_DEBUG () { 0 }
 sub PACKET_DEBUG () { 0 }
@@ -395,7 +395,7 @@ sub send_insteon_standard {
     my $self = shift;
     my ($device, $command, $callback) = @_;
     my $output = "\x02\x62";
-    $output .= pack("H[6]CH[4]", want_id($device), $flags->(), $command);
+    $output .= pack("H[6]CH[4]", need_id($device), $flags->(), $command);
 
     $self->plm_command($output, $callback);
 }
@@ -404,7 +404,7 @@ sub send_insteon_extended {
     my $self = shift;
     my ($device, $command, $data, $callback) = @_;
     my $output = "\x02\x62";
-    $output .= pack("H[6]CH[4]H[28]", want_id($device), $flags->(extended => 1), $command, $data);
+    $output .= pack("H[6]CH[4]H[28]", need_id($device), $flags->(extended => 1), $command, $data);
 
     $self->plm_command($output, $callback);
 }
@@ -558,7 +558,7 @@ sub get_im_config {
 
 sub device {
     my $self = shift;
-    my $address = want_id(shift);
+    my $address = need_id(shift);
 
     return Insteon::Device->get($self, $address);
 }

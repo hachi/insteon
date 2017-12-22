@@ -3,9 +3,11 @@ package Insteon::Util;
 use strict;
 use warnings;
 
+use Carp qw(croak);
+
 use base 'Exporter';
 
-our @EXPORT_OK = qw(&want_name &want_id &get_name &decode_aldb &decode_product_data &decode_engine);
+our @EXPORT_OK = qw(&want_name &want_id &need_id &get_name &decode_aldb &decode_product_data &decode_engine);
 
 my %device_by_name;
 my %device_by_id;
@@ -35,6 +37,13 @@ sub want_name {
 sub want_id {
     my $input = lc(shift);
     return $device_by_name{$input} || $input;
+}
+
+sub need_id {
+    my $input = lc(shift);
+    my $id_regex = qr/^[0-9A-Fa-f]{6}$/;
+    return $input if $input =~ $id_regex;
+    return $device_by_name{$input} || croak "Couldn't munge '$input' into a device ID";
 }
 
 sub decode_product_data {
